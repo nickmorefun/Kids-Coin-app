@@ -449,7 +449,9 @@ export const KissCoinGame: React.FC = () => {
         // Fallback reference id
       }
 
+      // Set only once the backend has confirmed the payment with the Developer Portal.
       let paymentSuccess = false;
+      let paidTransactionId: string | null = null;
 
       if (MiniKit.isInstalled()) {
         const recipient =
@@ -473,24 +475,31 @@ export const KissCoinGame: React.FC = () => {
 
         if (txId) {
           try {
-            await fetch('/api/confirm-payment', {
+            const confirm = await fetch('/api/confirm-payment', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ transaction_id: txId, reference: refId }),
             });
+            const confirmData = await confirm.json().catch(() => null);
+
+            if (confirm.ok && confirmData?.verified) {
+              paymentSuccess = true;
+              paidTransactionId = txId;
+            } else {
+              // Either still settling or it did not pay. Either way the banner is not ours
+              // to hand out yet, so say so rather than showing a banner that will not stick.
+              console.warn('[pay] not confirmed', confirmData?.reason ?? confirm.status);
+            }
           } catch {
-            // Non-blocking verification attempt
+            // Treated as unconfirmed: without a verified payment there is no sponsor banner.
           }
-          paymentSuccess = true;
-        } else if (resData?.reference || (payRes as unknown as Record<string, unknown>)?.status === 'success') {
-          paymentSuccess = true;
-        } else {
-          paymentSuccess = true;
         }
       } else {
-        // Web / preview simulation: instant approval for testing
-        await new Promise((resolve) => setTimeout(resolve, 600));
-        paymentSuccess = true;
+        // Outside World App there is no wallet to pay with, so the sponsor banner — which is
+        // global and paid — cannot be granted here. It used to self-approve in preview, which
+        // meant any browser could take the paid slot for free.
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        paymentSuccess = false;
       }
 
       if (paymentSuccess) {
@@ -517,6 +526,8 @@ export const KissCoinGame: React.FC = () => {
               action: 'sponsor',
               author,
               message: msg,
+              transaction_id: paidTransactionId,
+              reference: refId,
             }),
           });
         } catch {

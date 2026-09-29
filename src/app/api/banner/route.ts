@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { isSpent, markSpent, verifyWldPayment } from '@/lib/verify-payment';
 
 interface BannerData {
   type: 'highscore' | 'sponsor';
@@ -57,7 +58,7 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { action, author, message, score } = body;
+    const { action, author, message, score, transaction_id, reference } = body;
     const now = Date.now();
 
     if (action === 'reset') {
@@ -134,6 +135,41 @@ export async function POST(request: Request) {
         }, { status: 400 });
       }
     } else if (action === 'sponsor') {
+      // The sponsor banner is the paid feature, so it is granted only against a payment the
+      // Developer Portal confirms — never on the client saying it paid.
+      if (typeof transaction_id !== 'string' || !transaction_id) {
+        return NextResponse.json(
+          { success: false, error: 'transaction_id is required for a sponsor banner' },
+          { status: 400 }
+        );
+      }
+
+      if (isSpent(transaction_id)) {
+        return NextResponse.json(
+          { success: false, error: 'This payment has already been used for a banner.' },
+          { status: 409 }
+        );
+      }
+
+      const payment = await verifyWldPayment({
+        transactionId: transaction_id,
+        reference: typeof reference === 'string' ? reference : undefined,
+      });
+
+      if (!payment.ok) {
+        return NextResponse.json(
+          {
+            success: false,
+            error: 'Payment could not be verified, so the sponsor banner was not set.',
+            reason: payment.reason,
+            retryable: payment.retryable,
+          },
+          { status: payment.retryable ? 202 : 402 }
+        );
+      }
+
+      markSpent(transaction_id);
+
       // 1 WLD Sponsor override: 1 full hour (3600s) guaranteed shield!
       const oneHourMs = 60 * 60 * 1000;
       currentBanner = {

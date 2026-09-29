@@ -1,8 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { verifyWldPayment } from '@/lib/verify-payment';
 
 /**
  * Backend payment confirmation endpoint for World App MiniKit payments.
  * Verifies transaction receipts with the Worldcoin Developer Portal API.
+ *
+ * This endpoint fails closed: if the payment cannot be verified — for any reason,
+ * including a missing DEV_PORTAL_API_KEY — it reports failure rather than confirming.
+ * Callers must treat anything other than `verified: true` as "not paid".
+ *
  * @see https://docs.world.org/mini-apps/commands/pay
  */
 export async function POST(req: NextRequest) {
@@ -19,51 +25,33 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const appId =
-      process.env.NEXT_PUBLIC_APP_ID ||
-      process.env.APP_ID ||
-      'app_50930aa723f8df87d769869a70d29693';
-    const apiKey = process.env.DEV_PORTAL_API_KEY;
+    const result = await verifyWldPayment({
+      transactionId: transaction_id,
+      reference,
+    });
 
-    // If API key and App ID are configured, verify with Developer Portal
-    if (apiKey && appId) {
-      try {
-        const response = await fetch(
-          `https://developer.worldcoin.org/api/v2/minikit/transaction/${encodeURIComponent(
-            transaction_id
-          )}?app_id=${encodeURIComponent(appId)}`,
-          {
-            headers: {
-              Authorization: `Bearer ${apiKey}`,
-            },
-          }
-        );
-
-        if (response.ok) {
-          const txData = await response.json();
-          return NextResponse.json({
-            success: true,
-            status: txData.status || 'mined',
-            transaction_id,
-            reference,
-            verified: true,
-          });
-        } else {
-          const errDetail = await response.text();
-          console.warn('Developer Portal payment verification response:', response.status, errDetail);
-        }
-      } catch (err) {
-        console.error('Error verifying transaction with Developer Portal:', err);
-      }
+    if (!result.ok) {
+      return NextResponse.json(
+        {
+          success: false,
+          verified: false,
+          reason: result.reason,
+          retryable: result.retryable,
+          transaction_id,
+          reference,
+        },
+        // 202 while the transaction is still settling, 402 once it definitively did not pay.
+        { status: result.retryable ? 202 : 402 }
+      );
     }
 
-    // Fallback confirmation for local testing or when awaiting portal key
     return NextResponse.json({
       success: true,
-      status: 'confirmed',
+      verified: true,
+      status: result.status,
+      transaction_hash: result.transactionHash,
       transaction_id,
       reference,
-      verified: false,
     });
   } catch (error) {
     console.error('Confirm payment error:', error);
